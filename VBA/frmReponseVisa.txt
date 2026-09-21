@@ -1,0 +1,391 @@
+Option Explicit
+
+'===============================================================================================
+'  Formulaire "Ajouter une réponse à une fiche visa"
+'
+'  À coller dans un USERFORM VIDE nommé exactement : frmReponseVisa
+'  (Insertion > UserForm, puis dans la fenêtre Propriétés mettre (Name) = frmReponseVisa)
+'  Aucun contrôle à dessiner : ils sont créés automatiquement à l'ouverture.
+'===============================================================================================
+
+Private WithEvents cboFiche As MSForms.ComboBox
+Private WithEvents cboIndice As MSForms.ComboBox
+Private WithEvents cboEntite As MSForms.ComboBox
+Private WithEvents cboVisa As MSForms.ComboBox
+Private WithEvents btnOK As MSForms.CommandButton
+Private WithEvents btnAnnuler As MSForms.CommandButton
+Private txtDate As MSForms.TextBox
+Private txtReponse As MSForms.TextBox
+Private lblSujet As MSForms.Label
+Private lblEtat As MSForms.Label
+
+Private lignesIndice() As Long      ' ligne du tableau pour chaque indice proposé
+Private nbIndices As Long
+Private colsEntite() As Long        ' colonne du bloc "Visa" pour chaque entité
+Private nbEntites As Long
+Private codesVisa() As String       ' code à écrire (F, FAO, S, R, ATT, EXP)
+Private nbVisas As Long
+Private chargement As Boolean       ' évite le déclenchement des événements pendant le remplissage
+
+'===============================================================================================
+'  CONSTRUCTION DU FORMULAIRE
+'===============================================================================================
+Private Sub UserForm_Initialize()
+
+    chargement = True
+
+    Me.StartUpPosition = 1
+    Me.Caption = "Ajouter une réponse à une fiche visa"
+    Me.Width = 560
+    Me.Height = 540
+
+    AjouterLabel "Fiche n° :", 12, 15, 60
+    Set cboFiche = Me.Controls.Add("Forms.ComboBox.1", "cboFiche", True)
+    cboFiche.Left = 75: cboFiche.Top = 12: cboFiche.Width = 95
+    cboFiche.Style = fmStyleDropDownList
+
+    AjouterLabel "Indice :", 190, 15, 45
+    Set cboIndice = Me.Controls.Add("Forms.ComboBox.1", "cboIndice", True)
+    cboIndice.Left = 240: cboIndice.Top = 12: cboIndice.Width = 75
+    cboIndice.Style = fmStyleDropDownList
+
+    Set lblSujet = AjouterLabel("Sujet :", 12, 42, 520, 26)
+
+    AjouterLabel "Entité qui répond :", 12, 82, 110
+    Set cboEntite = Me.Controls.Add("Forms.ComboBox.1", "cboEntite", True)
+    cboEntite.Left = 130: cboEntite.Top = 79: cboEntite.Width = 250
+    cboEntite.Style = fmStyleDropDownList
+
+    AjouterLabel "Visa :", 12, 110, 110
+    Set cboVisa = Me.Controls.Add("Forms.ComboBox.1", "cboVisa", True)
+    cboVisa.Left = 130: cboVisa.Top = 107: cboVisa.Width = 250
+    cboVisa.Style = fmStyleDropDownList
+
+    AjouterLabel "Date :", 395, 110, 40
+    Set txtDate = Me.Controls.Add("Forms.TextBox.1", "txtDate", True)
+    txtDate.Left = 435: txtDate.Top = 107: txtDate.Width = 95
+    txtDate.Text = Format$(Date, "dd/mm/yyyy")
+
+    AjouterLabel "Réponse de l'entité (collez le texte avec Ctrl+V) :", 12, 138, 400
+
+    Set txtReponse = Me.Controls.Add("Forms.TextBox.1", "txtReponse", True)
+    txtReponse.Left = 12: txtReponse.Top = 156: txtReponse.Width = 518: txtReponse.Height = 265
+    txtReponse.MultiLine = True
+    txtReponse.WordWrap = True
+    txtReponse.EnterKeyBehavior = True
+    txtReponse.ScrollBars = fmScrollBarsVertical
+
+    Set lblEtat = AjouterLabel("", 12, 428, 518, 26)
+    lblEtat.ForeColor = RGB(150, 0, 0)
+
+    Set btnOK = Me.Controls.Add("Forms.CommandButton.1", "btnOK", True)
+    btnOK.Left = 296: btnOK.Top = 460: btnOK.Width = 115: btnOK.Height = 26
+    btnOK.Caption = "Enregistrer"
+    btnOK.Default = True
+
+    Set btnAnnuler = Me.Controls.Add("Forms.CommandButton.1", "btnAnnuler", True)
+    btnAnnuler.Left = 416: btnAnnuler.Top = 460: btnAnnuler.Width = 115: btnAnnuler.Height = 26
+    btnAnnuler.Caption = "Annuler"
+    btnAnnuler.Cancel = True
+
+    ChargerFiches
+    ChargerEntites
+    ChargerVisas
+
+    chargement = False
+
+    ChargerIndices
+
+End Sub
+
+Private Function AjouterLabel(ByVal texte As String, ByVal gauche As Single, ByVal haut As Single, _
+                              ByVal largeur As Single, Optional ByVal hauteur As Single = 16) As MSForms.Label
+    Dim lb As MSForms.Label
+    Set lb = Me.Controls.Add("Forms.Label.1", , True)
+    lb.Caption = texte
+    lb.Left = gauche
+    lb.Top = haut
+    lb.Width = largeur
+    lb.Height = hauteur
+    Set AjouterLabel = lb
+End Function
+
+'===============================================================================================
+'  REMPLISSAGE DES LISTES
+'===============================================================================================
+
+' Liste des numéros de fiche (sans doublon)
+Private Sub ChargerFiches()
+
+    Dim ws As Worksheet
+    Dim lig As Long, derLig As Long
+    Dim num As String, precedent As String
+
+    Set ws = FeuilleSuivi()
+    derLig = DerniereLigneFiches()
+
+    cboFiche.Clear
+    For lig = PREM_LIGNE To derLig
+        num = TexteCellule(ws.Cells(lig, COL_FICHE))
+        If num <> "" And num <> precedent Then
+            If ListeContient(cboFiche, num) = False Then cboFiche.AddItem num
+            precedent = num
+        End If
+    Next lig
+
+    If cboFiche.ListCount > 0 Then cboFiche.ListIndex = 0
+
+End Sub
+
+' Liste des indices disponibles pour la fiche sélectionnée
+Private Sub ChargerIndices()
+
+    Dim ws As Worksheet
+    Dim lig As Long, derLig As Long
+    Dim num As String, ind As String
+    Dim memoChargement As Boolean
+
+    memoChargement = chargement
+    chargement = True
+
+    Set ws = FeuilleSuivi()
+    derLig = DerniereLigneFiches()
+    num = CStr(cboFiche.Value)
+
+    nbIndices = 0
+    ReDim lignesIndice(1 To 1000)
+    cboIndice.Clear
+
+    If num <> "" Then
+        For lig = PREM_LIGNE To derLig
+            If TexteCellule(ws.Cells(lig, COL_FICHE)) = num Then
+                ind = TexteCellule(ws.Cells(lig, COL_INDICE))
+                nbIndices = nbIndices + 1
+                lignesIndice(nbIndices) = lig
+                cboIndice.AddItem ind
+            End If
+        Next lig
+    End If
+
+    ' le dernier indice est en général celui que l'on veut viser
+    If cboIndice.ListCount > 0 Then cboIndice.ListIndex = cboIndice.ListCount - 1
+
+    chargement = memoChargement
+    AfficherFiche
+
+End Sub
+
+' Liste des entités destinataires (en-têtes AB4, AE4, ...)
+Private Sub ChargerEntites()
+
+    Dim noms() As String
+    Dim i As Long
+
+    ListerEntites colsEntite, noms, nbEntites
+
+    cboEntite.Clear
+    For i = 1 To nbEntites
+        cboEntite.AddItem noms(i)
+    Next i
+
+    If cboEntite.ListCount > 0 Then cboEntite.ListIndex = 0
+
+End Sub
+
+' Liste des visas possibles (onglet Données)
+Private Sub ChargerVisas()
+
+    Dim libelles() As String
+    Dim i As Long
+
+    ListerVisas codesVisa, libelles, nbVisas
+
+    cboVisa.Clear
+    For i = 1 To nbVisas
+        cboVisa.AddItem libelles(i)
+    Next i
+
+End Sub
+
+Private Function ListeContient(ByRef cbo As MSForms.ComboBox, ByVal valeur As String) As Boolean
+    Dim i As Long
+    For i = 0 To cbo.ListCount - 1
+        If cbo.List(i) = valeur Then
+            ListeContient = True
+            Exit Function
+        End If
+    Next i
+End Function
+
+'===============================================================================================
+'  AFFICHAGE DE LA FICHE SELECTIONNEE
+'===============================================================================================
+Private Sub AfficherFiche()
+
+    Dim ws As Worksheet
+    Dim lig As Long, colBloc As Long
+    Dim visaExistant As String, dateExistante As String, texteExistant As String
+    Dim i As Long
+    Dim memoChargement As Boolean
+
+    memoChargement = chargement
+    chargement = True
+
+    Set ws = FeuilleSuivi()
+    lig = LigneSelectionnee()
+    colBloc = ColonneEntiteSelectionnee()
+
+    ' Rappel du sujet de la fiche
+    If lig > 0 Then
+        lblSujet.Caption = "Sujet : " & TexteCellule(ws.Cells(lig, COL_SUJET)) & _
+                           "   (ligne " & lig & " du tableau)"
+    Else
+        lblSujet.Caption = "Sujet :"
+    End If
+
+    lblEtat.Caption = ""
+
+    If lig > 0 And colBloc > 0 Then
+
+        visaExistant = TexteCellule(ws.Cells(lig, colBloc))
+        dateExistante = TexteCellule(ws.Cells(lig, colBloc + 1))
+        texteExistant = ""
+        If Not IsError(ws.Cells(lig, colBloc + 2).Value) Then
+            texteExistant = CStr(ws.Cells(lig, colBloc + 2).Value)
+        End If
+
+        ' Pré-sélection du visa déjà saisi
+        cboVisa.ListIndex = -1
+        If visaExistant <> "" Then
+            For i = 1 To nbVisas
+                If UCase$(codesVisa(i)) = UCase$(visaExistant) Then
+                    cboVisa.ListIndex = i - 1
+                    Exit For
+                End If
+            Next i
+        End If
+
+        If dateExistante <> "" Then
+            txtDate.Text = dateExistante
+        Else
+            txtDate.Text = Format$(Date, "dd/mm/yyyy")
+        End If
+
+        ' On ne remplace le texte saisi que si la cellule contient déjà quelque chose
+        If Len(texteExistant) > 0 Then
+            txtReponse.Text = texteExistant
+        ElseIf Len(txtReponse.Text) = 0 Then
+            txtReponse.Text = ""
+        End If
+
+        If visaExistant <> "" Or Len(texteExistant) > 0 Then
+            lblEtat.Caption = "Attention : une réponse existe déjà pour cette entité " & _
+                              "(visa " & visaExistant & "). L'enregistrement la remplacera."
+        End If
+
+    End If
+
+    chargement = memoChargement
+
+End Sub
+
+Private Function LigneSelectionnee() As Long
+    If cboIndice.ListIndex >= 0 And cboIndice.ListIndex < nbIndices Then
+        LigneSelectionnee = lignesIndice(cboIndice.ListIndex + 1)
+    End If
+End Function
+
+Private Function ColonneEntiteSelectionnee() As Long
+    If cboEntite.ListIndex >= 0 And cboEntite.ListIndex < nbEntites Then
+        ColonneEntiteSelectionnee = colsEntite(cboEntite.ListIndex + 1)
+    End If
+End Function
+
+'===============================================================================================
+'  EVENEMENTS
+'===============================================================================================
+Private Sub cboFiche_Change()
+    If chargement Then Exit Sub
+    ChargerIndices
+End Sub
+
+Private Sub cboIndice_Change()
+    If chargement Then Exit Sub
+    AfficherFiche
+End Sub
+
+Private Sub cboEntite_Change()
+    If chargement Then Exit Sub
+    AfficherFiche
+End Sub
+
+Private Sub btnAnnuler_Click()
+    Me.Hide
+End Sub
+
+Private Sub btnOK_Click()
+
+    Dim ws As Worksheet
+    Dim lig As Long, colBloc As Long
+    Dim codeVisa As String
+    Dim dateVisa As Variant
+    Dim recap As String
+
+    Set ws = FeuilleSuivi()
+
+    lig = LigneSelectionnee()
+    colBloc = ColonneEntiteSelectionnee()
+
+    If lig = 0 Then
+        MsgBox "Sélectionnez le numéro de fiche et son indice.", vbExclamation, TITRE
+        Exit Sub
+    End If
+
+    If colBloc = 0 Then
+        MsgBox "Sélectionnez l'entité qui répond à la fiche.", vbExclamation, TITRE
+        cboEntite.SetFocus
+        Exit Sub
+    End If
+
+    If cboVisa.ListIndex < 0 Then
+        MsgBox "Sélectionnez le visa (F, FAO, S, R, ATT, EXP).", vbExclamation, TITRE
+        cboVisa.SetFocus
+        Exit Sub
+    End If
+    codeVisa = codesVisa(cboVisa.ListIndex + 1)
+
+    If Trim$(txtDate.Text) = "" Then
+        dateVisa = Empty
+    ElseIf IsDate(txtDate.Text) Then
+        dateVisa = CDate(txtDate.Text)
+    Else
+        MsgBox "La date saisie n'est pas valide (format attendu : jj/mm/aaaa).", vbExclamation, TITRE
+        txtDate.SetFocus
+        Exit Sub
+    End If
+
+    recap = "Fiche n° " & cboFiche.Value & " - indice " & cboIndice.Value & vbLf & _
+            "Entité : " & cboEntite.Value & vbLf & _
+            "Visa : " & codeVisa & vbLf & _
+            "Date : " & IIf(IsDate(dateVisa), Format$(dateVisa, "dd/mm/yyyy"), "(vide)") & vbLf & _
+            "Cellules : " & ws.Cells(lig, colBloc).Address(False, False) & " à " & _
+            ws.Cells(lig, colBloc + 2).Address(False, False) & vbLf & vbLf & _
+            "Confirmez-vous l'enregistrement ?"
+
+    If MsgBox(recap, vbOKCancel + vbQuestion, TITRE) <> vbOK Then Exit Sub
+
+    If Not EnregistrerReponse(lig, colBloc, codeVisa, dateVisa, txtReponse.Text) Then Exit Sub
+
+    If MsgBox("Réponse enregistrée." & vbLf & vbLf & _
+              "Voulez-vous saisir une autre réponse ?", vbYesNo + vbInformation, TITRE) = vbYes Then
+        chargement = True
+        txtReponse.Text = ""
+        txtDate.Text = Format$(Date, "dd/mm/yyyy")
+        chargement = False
+        AfficherFiche
+        cboEntite.SetFocus
+    Else
+        Me.Hide
+    End If
+
+End Sub
